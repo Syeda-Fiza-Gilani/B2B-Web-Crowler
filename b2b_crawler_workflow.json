@@ -1,0 +1,904 @@
+{
+  "name": "Autonomous B2B Web & Social Media Crawler (Jina + Gemini → Sheets + HubSpot)",
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## B2B Web & Social Crawler\n**Pipeline:** Sheet of URLs → Jina Reader (markdown) → Gemini (strict JSON schema) → validate/split → Google Sheets + HubSpot\n\n### Setup\n1. Create ONE Google Sheet with 3 tabs: `Targets` (header `url`), `Contacts` and `Errors` (headers listed in the README).\n2. Paste the sheet ID into **Workflow Config**. Tweak model / confidence there too.\n3. Credentials: Google Sheets OAuth2, Jina (Header Auth: `Authorization` = `Bearer <key>`), Gemini (Header Auth: `x-goog-api-key` = `<key>`), HubSpot App Token (private app with `crm.objects.contacts.write`).\n4. Create the `crawler_*` custom contact properties in HubSpot (see README).\n5. Run manually, then enable the Schedule Trigger.",
+        "height": 420,
+        "width": 560,
+        "color": 4
+      },
+      "id": "8b966681-439c-4f1b-9af9-a46c8db49731",
+      "name": "Setup Notes",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -120,
+        -520
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "b961f0a3-e19d-41c0-8e9a-b9ecc6f492a7",
+      "name": "Manual Trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "days",
+              "daysInterval": 1,
+              "triggerAtHour": 6
+            }
+          ]
+        }
+      },
+      "id": "7f35babc-cab5-41e6-9e42-c5dfc5eb0064",
+      "name": "Daily Schedule (disabled)",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        200
+      ],
+      "disabled": true
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "dcba022a-dab4-499d-b53d-23c0f373bb1c",
+              "name": "spreadsheet_id",
+              "value": "REPLACE_WITH_YOUR_SPREADSHEET_ID",
+              "type": "string"
+            },
+            {
+              "id": "f3120c08-f994-4e3f-8711-931cd6470c16",
+              "name": "gemini_model",
+              "value": "gemini-2.5-flash",
+              "type": "string"
+            },
+            {
+              "id": "80054d68-62f3-453a-935f-85476fd8a752",
+              "name": "min_confidence",
+              "value": 0.5,
+              "type": "number"
+            },
+            {
+              "id": "67467890-0340-4cb1-8744-9c534e7f0bb1",
+              "name": "max_page_chars",
+              "value": 60000,
+              "type": "number"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "45625980-644a-4e6d-b94c-34bb878295de",
+      "name": "Workflow Config",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        260,
+        100
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "read",
+        "documentId": {
+          "__rl": true,
+          "value": "={{ $('Workflow Config').first().json.spreadsheet_id }}",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Targets",
+          "mode": "name"
+        },
+        "options": {}
+      },
+      "id": "c5e4536e-e2d5-4b6a-8f89-40237c645d1e",
+      "name": "Read Target URLs",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        520,
+        100
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "REPLACE_ME",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Validate, normalise and de-duplicate the target URLs\nconst seen = new Set();\nconst out = [];\n$input.all().forEach((item, i) => {\n  let raw = String(item.json.url ?? item.json.URL ?? item.json.Url ?? '').trim();\n  if (!raw) return;\n  if (!/^https?:\\/\\//i.test(raw)) raw = 'https://' + raw;\n  let parsed;\n  try { parsed = new URL(raw); } catch (e) { return; }\n  const key = parsed.href.replace(/\\/$/, '').toLowerCase();\n  if (seen.has(key)) return;\n  seen.add(key);\n  out.push({ json: { url: parsed.href }, pairedItem: { item: i } });\n});\nreturn out;\n"
+      },
+      "id": "c71acafb-86d5-4f93-b96c-afa4c66ca596",
+      "name": "Normalize URLs",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        780,
+        100
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ 'https://r.jina.ai/' + $json.url }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Accept",
+              "value": "application/json"
+            },
+            {
+              "name": "X-Return-Format",
+              "value": "markdown"
+            },
+            {
+              "name": "X-With-Links-Summary",
+              "value": "true"
+            },
+            {
+              "name": "X-Retain-Images",
+              "value": "none"
+            },
+            {
+              "name": "X-Timeout",
+              "value": "45"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 60000,
+          "batching": {
+            "batch": {
+              "batchSize": 2,
+              "batchInterval": 1500
+            }
+          }
+        }
+      },
+      "id": "3c29e3dd-43fe-4ad5-8b33-e3a1e8a6ee44",
+      "name": "Jina Reader (URL → Markdown)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1040,
+        100
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000,
+      "onError": "continueRegularOutput",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_ME",
+          "name": "Jina AI API Key"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Turns the Jina Reader response into a Gemini structured-output request\nconst cfg = $('Workflow Config').first().json;\nconst MODEL = cfg.gemini_model || 'gemini-2.5-flash';\nconst MAX_CHARS = Number(cfg.max_page_chars) || 60000;\n\nconst errText = (e) => {\n  if (!e) return 'unknown error';\n  if (typeof e === 'string') return e.slice(0, 300);\n  return String(e.message || e.description || JSON.stringify(e)).slice(0, 300);\n};\n\nconst S = { type: 'STRING', nullable: true };\nconst schema = {\n  type: 'OBJECT',\n  properties: {\n    company: {\n      type: 'OBJECT',\n      properties: {\n        name: S, website: S, industry: S, description: S, headquarters: S,\n        employee_count_range: S, general_email: S, general_phone: S,\n        linkedin_url: S, twitter_url: S, facebook_url: S, instagram_url: S, youtube_url: S\n      },\n      required: ['name']\n    },\n    contacts: {\n      type: 'ARRAY',\n      items: {\n        type: 'OBJECT',\n        properties: {\n          first_name: S, last_name: S, full_name: { type: 'STRING' },\n          job_title: S, department: S, email: S, phone: S,\n          linkedin_url: S, twitter_url: S, location: S,\n          confidence: { type: 'NUMBER' }\n        },\n        required: ['full_name', 'confidence']\n      }\n    }\n  },\n  required: ['company', 'contacts']\n};\n\nconst SYSTEM = [\n  'You are a B2B lead-extraction engine.',\n  'You receive a web page converted to markdown, plus its social/contact links.',\n  'Extract the company profile and every named person who works at (or represents) the company.',\n  'Rules:',\n  '1. Use ONLY information explicitly present in the input. Never guess or invent emails, phone numbers or URLs.',\n  '2. Emails must appear literally in the input. Use null for any field that is not present.',\n  '3. Return absolute https URLs. Do not return relative links.',\n  '4. Exclude customers, testimonial authors, blog-post authors and people who are clearly not staff of the company.',\n  '5. Do not return the same person twice.',\n  '6. confidence is 0 to 1: how completely and unambiguously the page supports that contact record.'\n].join('\\n');\n\nconst SOCIAL_RE = /(linkedin\\.com|twitter\\.com|x\\.com|facebook\\.com|instagram\\.com|youtube\\.com|tiktok\\.com|github\\.com|mailto:|tel:)/i;\nconst EMAIL_RE = /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}/g;\nconst BAD_EMAIL = /\\.(png|jpe?g|gif|svg|webp|css|js)$/i;\n\nconst out = [];\n$input.all().forEach((item, i) => {\n  const source_url = $('Normalize URLs').itemMatching(i).json.url;\n  const logged_at = new Date().toISOString();\n  const data = item.json && item.json.data;\n\n  if (!data || !data.content || item.json.error) {\n    out.push({\n      json: {\n        _status: 'failed', source_url,\n        error: 'Jina Reader failed: ' + errText(item.json && (item.json.error || item.json.message) || 'empty content'),\n        logged_at\n      },\n      pairedItem: { item: i }\n    });\n    return;\n  }\n\n  let md = String(data.content)\n    .replace(/!\\[[^\\]]*\\]\\([^)]*\\)/g, '')\n    .replace(/[ \\t]+\\n/g, '\\n')\n    .replace(/\\n{3,}/g, '\\n\\n')\n    .trim();\n  if (md.length > MAX_CHARS) md = md.slice(0, MAX_CHARS) + '\\n\\n[TRUNCATED]';\n\n  // Jina returns links as an object {text: url} or as an array of [text, url]\n  const raw = data.links;\n  let pairs = [];\n  if (Array.isArray(raw)) pairs = raw.map(l => Array.isArray(l) ? l : [l && l.text, l && (l.url || l.href)]);\n  else if (raw && typeof raw === 'object') pairs = Object.entries(raw);\n  const links = pairs\n    .map(([t, u]) => ({ text: String(t || '').slice(0, 80), url: String(u || '') }))\n    .filter(l => SOCIAL_RE.test(l.url))\n    .slice(0, 80);\n\n  const found = new Set();\n  const scan = (txt) => (String(txt).match(EMAIL_RE) || []).forEach(e => {\n    e = e.toLowerCase();\n    if (!BAD_EMAIL.test(e)) found.add(e);\n  });\n  scan(md);\n  links.forEach(l => scan(l.url));\n  const emails_found = [...found].slice(0, 300);\n\n  const userText = [\n    'SOURCE_URL: ' + source_url,\n    'PAGE_TITLE: ' + (data.title || ''),\n    'PAGE_DESCRIPTION: ' + (data.description || ''),\n    'EMAILS_FOUND_BY_REGEX: ' + (emails_found.join(', ') || 'none'),\n    'SOCIAL_AND_CONTACT_LINKS:',\n    links.map(l => '- ' + l.text + ' | ' + l.url).join('\\n') || 'none',\n    '',\n    'PAGE_MARKDOWN:',\n    md\n  ].join('\\n');\n\n  const generationConfig = {\n    responseMimeType: 'application/json',\n    responseSchema: schema,\n    maxOutputTokens: 16384\n  };\n  // Sampling / thinking knobs only for the 2.x family (newer models deprecate them)\n  if (/^gemini-2\\./.test(MODEL)) {\n    generationConfig.temperature = 0;\n    generationConfig.maxOutputTokens = 8192;\n    if (/flash/.test(MODEL)) generationConfig.thinkingConfig = { thinkingBudget: 0 };\n  }\n\n  out.push({\n    json: {\n      _status: 'ok',\n      source_url,\n      model: MODEL,\n      page_title: data.title || '',\n      emails_found,\n      geminiRequest: {\n        systemInstruction: { parts: [{ text: SYSTEM }] },\n        contents: [{ role: 'user', parts: [{ text: userText }] }],\n        generationConfig\n      }\n    },\n    pairedItem: { item: i }\n  });\n});\nreturn out;\n"
+      },
+      "id": "8026d949-6ec8-4772-ae89-d5f4e7d2bb01",
+      "name": "Prepare Gemini Payload",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1300,
+        100
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "45736bfb-2558-4e6f-935e-298172bf89ba",
+              "leftValue": "={{ $json._status }}",
+              "rightValue": "ok",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "97e3641f-22ff-478c-95ac-607504e5dfbc",
+      "name": "Has Page Content?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1560,
+        100
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ 'https://generativelanguage.googleapis.com/v1beta/models/' + $json.model + ':generateContent' }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.geminiRequest) }}",
+        "options": {
+          "timeout": 120000,
+          "batching": {
+            "batch": {
+              "batchSize": 3,
+              "batchInterval": 1000
+            }
+          }
+        }
+      },
+      "id": "31eaf63d-78a6-4295-bdf4-7a49693b0f50",
+      "name": "Gemini Structured Extraction",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1820,
+        0
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 4000,
+      "onError": "continueRegularOutput",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_ME",
+          "name": "Gemini API Key"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Parses Gemini's JSON, validates it, and explodes it into one item per contact\nconst out = [];\nconst now = new Date().toISOString();\n\nconst errText = (e) => {\n  if (!e) return 'unknown error';\n  if (typeof e === 'string') return e.slice(0, 300);\n  return String(e.message || e.description || JSON.stringify(e)).slice(0, 300);\n};\nconst clean = (v) => {\n  if (v === null || v === undefined) return '';\n  const s = String(v).trim();\n  return /^(null|n\\/a|none|unknown|undefined|-)$/i.test(s) ? '' : s;\n};\nconst cleanEmail = (v) => {\n  const e = clean(v).toLowerCase().replace(/^mailto:/, '');\n  return /^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/.test(e) ? e : '';\n};\nconst cleanUrl = (v) => {\n  let u = clean(v);\n  if (!u) return '';\n  if (!/^https?:\\/\\//i.test(u)) u = 'https://' + u.replace(/^\\/+/, '');\n  try { return new URL(u).href; } catch (e) { return ''; }\n};\nconst cleanPhone = (v) => clean(v).replace(/[^\\d+()\\-.\\s]/g, '').trim();\nconst clamp = (n, d) => {\n  n = Number(n);\n  return Number.isFinite(n) ? Math.min(1, Math.max(0, n)) : d;\n};\n\n$input.all().forEach((item, i) => {\n  const ctx = $('Prepare Gemini Payload').itemMatching(i).json;\n  const source_url = ctx.source_url;\n  const emailsFound = ctx.emails_found || [];\n  const fail = (msg) => out.push({\n    json: { _status: 'failed', source_url, error: msg, logged_at: now },\n    pairedItem: { item: i }\n  });\n\n  if (item.json.error) return fail('Gemini request failed: ' + errText(item.json.error));\n\n  let parsed;\n  try {\n    const cand = item.json.candidates && item.json.candidates[0];\n    const text = ((cand && cand.content && cand.content.parts) || []).map(p => p.text || '').join('');\n    if (!text) {\n      throw new Error('empty response (' + ((cand && cand.finishReason) ||\n        (item.json.promptFeedback && item.json.promptFeedback.blockReason) || 'unknown') + ')');\n    }\n    parsed = JSON.parse(text);\n  } catch (e) {\n    return fail('Gemini JSON parse error: ' + e.message);\n  }\n\n  const co = parsed.company || {};\n  const company = {\n    company_name: clean(co.name) || clean(ctx.page_title),\n    company_website: cleanUrl(co.website) || source_url,\n    company_industry: clean(co.industry),\n    company_description: clean(co.description),\n    company_hq: clean(co.headquarters),\n    company_size: clean(co.employee_count_range),\n    company_linkedin_url: cleanUrl(co.linkedin_url),\n    company_twitter_url: cleanUrl(co.twitter_url),\n    company_facebook_url: cleanUrl(co.facebook_url),\n    company_instagram_url: cleanUrl(co.instagram_url),\n    company_youtube_url: cleanUrl(co.youtube_url)\n  };\n\n  const build = (c, record_type, defaultConfidence) => {\n    let first = clean(c.first_name);\n    let last = clean(c.last_name);\n    let full = clean(c.full_name) || [first, last].filter(Boolean).join(' ');\n    if (full && !first) {\n      const parts = full.split(/\\s+/);\n      first = parts[0];\n      last = last || parts.slice(1).join(' ');\n    }\n    // Anti-hallucination: keep an email only if it literally exists in the crawled page\n    let email = cleanEmail(c.email);\n    if (email && !emailsFound.includes(email)) email = '';\n\n    const rec = {\n      record_type,\n      full_name: full, first_name: first, last_name: last,\n      job_title: clean(c.job_title), department: clean(c.department),\n      email, phone: cleanPhone(c.phone),\n      contact_linkedin_url: cleanUrl(c.linkedin_url),\n      contact_twitter_url: cleanUrl(c.twitter_url),\n      location: clean(c.location),\n      ...company,\n      confidence: clamp(c.confidence, defaultConfidence),\n      source_url,\n      scraped_at: now,\n      _status: 'ok'\n    };\n    rec.dedupe_key = (rec.email || rec.contact_linkedin_url ||\n      ((rec.full_name || rec.company_name) + '|' + rec.company_name)).toLowerCase();\n    return rec;\n  };\n\n  const seen = new Set();\n  const records = [];\n  (Array.isArray(parsed.contacts) ? parsed.contacts : []).forEach(c => {\n    const r = build(c, 'person', 0.5);\n    if (!r.full_name && !r.email) return;\n    if (seen.has(r.dedupe_key)) return;\n    seen.add(r.dedupe_key);\n    records.push(r);\n  });\n\n  // No people found: fall back to a company-level lead (general inbox / phone)\n  if (!records.length) {\n    const ge = cleanEmail(co.general_email);\n    const gp = cleanPhone(co.general_phone);\n    if ((ge && emailsFound.includes(ge)) || gp) {\n      const r = build({ full_name: '', email: ge, phone: gp, confidence: 0.5 }, 'company_general', 0.5);\n      r.confidence = 0.5;\n      records.push(r);\n    }\n  }\n\n  if (!records.length) return fail('No contact entities found on page');\n  records.forEach(r => out.push({ json: r, pairedItem: { item: i } }));\n});\nreturn out;\n"
+      },
+      "id": "99778495-a973-47e0-8e59-b753fa654c49",
+      "name": "Parse & Normalize Contacts",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2080,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "37d99173-bb6c-4d45-8c57-6e6e83b25bcd",
+              "leftValue": "={{ $json._status }}",
+              "rightValue": "ok",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "9d9c0720-4ae6-439c-8dcd-ebf05cc6cad9",
+      "name": "Extraction Valid?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        2340,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "appendOrUpdate",
+        "documentId": {
+          "__rl": true,
+          "value": "={{ $('Workflow Config').first().json.spreadsheet_id }}",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Contacts",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "dedupe_key": "={{ $json.dedupe_key }}",
+            "full_name": "={{ $json.full_name }}",
+            "first_name": "={{ $json.first_name }}",
+            "last_name": "={{ $json.last_name }}",
+            "job_title": "={{ $json.job_title }}",
+            "department": "={{ $json.department }}",
+            "email": "={{ $json.email }}",
+            "phone": "={{ $json.phone }}",
+            "contact_linkedin_url": "={{ $json.contact_linkedin_url }}",
+            "contact_twitter_url": "={{ $json.contact_twitter_url }}",
+            "location": "={{ $json.location }}",
+            "company_name": "={{ $json.company_name }}",
+            "company_website": "={{ $json.company_website }}",
+            "company_industry": "={{ $json.company_industry }}",
+            "company_description": "={{ $json.company_description }}",
+            "company_hq": "={{ $json.company_hq }}",
+            "company_size": "={{ $json.company_size }}",
+            "company_linkedin_url": "={{ $json.company_linkedin_url }}",
+            "company_twitter_url": "={{ $json.company_twitter_url }}",
+            "company_facebook_url": "={{ $json.company_facebook_url }}",
+            "company_instagram_url": "={{ $json.company_instagram_url }}",
+            "company_youtube_url": "={{ $json.company_youtube_url }}",
+            "confidence": "={{ $json.confidence }}",
+            "record_type": "={{ $json.record_type }}",
+            "source_url": "={{ $json.source_url }}",
+            "scraped_at": "={{ $json.scraped_at }}"
+          },
+          "matchingColumns": [
+            "dedupe_key"
+          ],
+          "schema": [
+            {
+              "id": "dedupe_key",
+              "displayName": "dedupe_key",
+              "required": false,
+              "defaultMatch": true,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "full_name",
+              "displayName": "full_name",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "first_name",
+              "displayName": "first_name",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "last_name",
+              "displayName": "last_name",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "job_title",
+              "displayName": "job_title",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "department",
+              "displayName": "department",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "email",
+              "displayName": "email",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "phone",
+              "displayName": "phone",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "contact_linkedin_url",
+              "displayName": "contact_linkedin_url",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "contact_twitter_url",
+              "displayName": "contact_twitter_url",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "location",
+              "displayName": "location",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "company_name",
+              "displayName": "company_name",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "company_website",
+              "displayName": "company_website",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "company_industry",
+              "displayName": "company_industry",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "company_description",
+              "displayName": "company_description",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "company_hq",
+              "displayName": "company_hq",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "company_size",
+              "displayName": "company_size",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "company_linkedin_url",
+              "displayName": "company_linkedin_url",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "company_twitter_url",
+              "displayName": "company_twitter_url",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "company_facebook_url",
+              "displayName": "company_facebook_url",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "company_instagram_url",
+              "displayName": "company_instagram_url",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "company_youtube_url",
+              "displayName": "company_youtube_url",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "confidence",
+              "displayName": "confidence",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "record_type",
+              "displayName": "record_type",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "source_url",
+              "displayName": "source_url",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "scraped_at",
+              "displayName": "scraped_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "id": "090899d8-1fe7-4fd6-b2fc-758c42a065ee",
+      "name": "Google Sheets: Upsert Contacts",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        2620,
+        -100
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "REPLACE_ME",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Builds HubSpot batch-upsert payloads (max 100 contacts / request), skipping blank values\nconst cfg = $('Workflow Config').first().json;\nconst MIN = Number(cfg.min_confidence !== undefined ? cfg.min_confidence : 0.5);\n\nconst best = new Map();\n$input.all().forEach(({ json: r }) => {\n  if (!r.email || Number(r.confidence) < MIN) return;\n  const prev = best.get(r.email);\n  if (!prev || Number(r.confidence) > Number(prev.confidence)) best.set(r.email, r);\n});\n\nconst inputs = [...best.values()].map(r => {\n  const raw = {\n    // standard HubSpot contact properties\n    firstname: r.first_name,\n    lastname: r.last_name,\n    jobtitle: r.job_title,\n    phone: r.phone,\n    company: r.company_name,\n    website: r.company_website,\n    // custom properties (create these in HubSpot first, internal names below)\n    crawler_source_url: r.source_url,\n    crawler_department: r.department,\n    crawler_contact_linkedin: r.contact_linkedin_url,\n    crawler_contact_twitter: r.contact_twitter_url,\n    crawler_company_industry: r.company_industry,\n    crawler_company_size: r.company_size,\n    crawler_company_description: (r.company_description || '').slice(0, 1000),\n    crawler_company_linkedin: r.company_linkedin_url,\n    crawler_company_twitter: r.company_twitter_url,\n    crawler_company_facebook: r.company_facebook_url,\n    crawler_company_instagram: r.company_instagram_url,\n    crawler_confidence: Number(r.confidence),\n    crawler_scraped_at: r.scraped_at\n  };\n  const properties = {};\n  for (const [k, v] of Object.entries(raw)) {\n    if (v === '' || v === null || v === undefined) continue;\n    properties[k] = v;\n  }\n  return { idProperty: 'email', id: r.email, properties };\n});\n\nconst out = [];\nfor (let i = 0; i < inputs.length; i += 100) {\n  out.push({ json: { inputs: inputs.slice(i, i + 100) } });\n}\nreturn out;\n"
+      },
+      "id": "24af467d-186e-49a3-a009-3dc736b26d9b",
+      "name": "Build HubSpot Batches",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2620,
+        120
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.hubapi.com/crm/v3/objects/contacts/batch/upsert",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "hubspotAppToken",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json) }}",
+        "options": {
+          "timeout": 60000
+        }
+      },
+      "id": "011c284c-ff03-465c-aab8-b76f4bc9b490",
+      "name": "HubSpot: Batch Upsert Contacts",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2880,
+        120
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000,
+      "onError": "continueRegularOutput",
+      "credentials": {
+        "hubspotAppToken": {
+          "id": "REPLACE_ME",
+          "name": "HubSpot App Token"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "={{ $('Workflow Config').first().json.spreadsheet_id }}",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Errors",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "source_url": "={{ $json.source_url }}",
+            "error": "={{ $json.error }}",
+            "logged_at": "={{ $json.logged_at }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "source_url",
+              "displayName": "source_url",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "error",
+              "displayName": "error",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "logged_at",
+              "displayName": "logged_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "id": "9bede5a9-2609-4281-99fc-dc66c5eecb09",
+      "name": "Google Sheets: Log Errors",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        2340,
+        300
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "REPLACE_ME",
+          "name": "Google Sheets account"
+        }
+      }
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Manual Trigger": {
+      "main": [
+        [
+          {
+            "node": "Workflow Config",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Daily Schedule (disabled)": {
+      "main": [
+        [
+          {
+            "node": "Workflow Config",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Workflow Config": {
+      "main": [
+        [
+          {
+            "node": "Read Target URLs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Target URLs": {
+      "main": [
+        [
+          {
+            "node": "Normalize URLs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize URLs": {
+      "main": [
+        [
+          {
+            "node": "Jina Reader (URL → Markdown)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Jina Reader (URL → Markdown)": {
+      "main": [
+        [
+          {
+            "node": "Prepare Gemini Payload",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Gemini Payload": {
+      "main": [
+        [
+          {
+            "node": "Has Page Content?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Has Page Content?": {
+      "main": [
+        [
+          {
+            "node": "Gemini Structured Extraction",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Google Sheets: Log Errors",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gemini Structured Extraction": {
+      "main": [
+        [
+          {
+            "node": "Parse & Normalize Contacts",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse & Normalize Contacts": {
+      "main": [
+        [
+          {
+            "node": "Extraction Valid?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extraction Valid?": {
+      "main": [
+        [
+          {
+            "node": "Google Sheets: Upsert Contacts",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Build HubSpot Batches",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Google Sheets: Log Errors",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build HubSpot Batches": {
+      "main": [
+        [
+          {
+            "node": "HubSpot: Batch Upsert Contacts",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "tags": []
+}
